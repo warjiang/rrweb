@@ -82,6 +82,7 @@ export enum IncrementalSource {
   StyleDeclaration,
   Selection,
   AdoptedStyleSheet,
+  CustomElement,
 }
 
 export type mutationData = {
@@ -141,6 +142,10 @@ export type adoptedStyleSheetData = {
   source: IncrementalSource.AdoptedStyleSheet;
 } & adoptedStyleSheetParam;
 
+export type customElementData = {
+  source: IncrementalSource.CustomElement;
+} & customElementParam;
+
 export type incrementalData =
   | mutationData
   | mousemoveData
@@ -154,7 +159,8 @@ export type incrementalData =
   | fontData
   | selectionData
   | styleDeclarationData
-  | adoptedStyleSheetData;
+  | adoptedStyleSheetData
+  | customElementData;
 
 export type event =
   | domContentLoadedEvent
@@ -262,6 +268,7 @@ export type hooksParam = {
   canvasMutation?: canvasMutationCallback;
   font?: fontCallback;
   selection?: selectionCallback;
+  customElement?: customElementCallback;
 };
 
 // https://dom.spec.whatwg.org/#interface-mutationrecord
@@ -283,7 +290,7 @@ export type textMutation = {
   value: string | null;
 };
 
-export type styleAttributeValue = {
+export type styleOMValue = {
   [key: string]: styleValueWithPriority | string | false;
 };
 
@@ -292,13 +299,15 @@ export type styleValueWithPriority = [string, string];
 export type attributeCursor = {
   node: Node;
   attributes: {
-    [key: string]: string | styleAttributeValue | null;
+    [key: string]: string | styleOMValue | null;
   };
+  styleDiff: styleOMValue;
+  _unchangedStyles: styleOMValue;
 };
 export type attributeMutation = {
   id: number;
   attributes: {
-    [key: string]: string | styleAttributeValue | null;
+    [key: string]: string | styleOMValue | null;
   };
 };
 
@@ -608,6 +617,14 @@ export type assetParam =
 
 export type assetCallback = (d: assetParam) => void;
 
+export type customElementParam = {
+  define?: {
+    name: string;
+  };
+};
+
+export type customElementCallback = (c: customElementParam) => void;
+
 /**
  *  @deprecated
  */
@@ -755,6 +772,10 @@ export type elementNode = {
   childNodes: serializedNodeWithId[];
   isSVG?: true;
   needBlock?: boolean;
+  /**
+   * This is a custom element or not.
+   */
+  isCustom?: true;
 };
 
 export type textNode = {

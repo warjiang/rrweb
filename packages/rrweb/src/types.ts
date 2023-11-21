@@ -17,6 +17,7 @@ import type {
   addedNodeMutation,
   blockClass,
   canvasMutationCallback,
+  customElementCallback,
   eventWithTime,
   fontCallback,
   hooksParam,
@@ -47,6 +48,7 @@ export type recordOptions<T> = {
   blockClass?: blockClass;
   blockSelector?: string;
   ignoreClass?: string;
+  ignoreSelector?: string;
   maskTextClass?: maskTextClass;
   maskTextSelector?: string;
   maskAllInputs?: boolean;
@@ -60,6 +62,7 @@ export type recordOptions<T> = {
   packFn?: PackFn;
   sampling?: SamplingStrategy;
   dataURLOptions?: DataURLOptions;
+  recordDOM?: boolean;
   recordCanvas?: boolean;
   recordCrossOriginIframes?: boolean;
   recordAfter?: 'DOMContentLoaded' | 'load';
@@ -100,6 +103,7 @@ export type observerParam = {
   blockClass: blockClass;
   blockSelector: string | null;
   ignoreClass: string;
+  ignoreSelector: string | null;
   maskTextClass: maskTextClass;
   maskTextSelector: string | null;
   maskInputOptions: MaskInputOptions;
@@ -110,8 +114,10 @@ export type observerParam = {
   styleSheetRuleCb: styleSheetRuleCallback;
   styleDeclarationCb: styleDeclarationCallback;
   canvasMutationCb: canvasMutationCallback;
+  customElementCb: customElementCallback;
   fontCb: fontCallback;
   sampling: SamplingStrategy;
+  recordDOM: boolean;
   recordCanvas: boolean;
   inlineImages: boolean;
   userTriggeredOnInput: boolean;

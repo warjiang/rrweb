@@ -7,6 +7,7 @@ import {
   getServerURL,
   launchPuppeteer,
   waitForRAF,
+  waitForIFrameLoad,
   replaceLast,
   generateRecordSnippet,
   ISuite,
@@ -71,7 +72,7 @@ describe('record integration tests', function (this: ISuite) {
     // also tap on the span
     const span = await page.waitForSelector('span');
     const center = await page.evaluate((el) => {
-      const { x, y, width, height } = el.getBoundingClientRect();
+      const { x, y, width, height } = el!.getBoundingClientRect();
       return {
         x: Math.round(x + width / 2),
         y: Math.round(y + height / 2),
@@ -213,6 +214,56 @@ describe('record integration tests', function (this: ISuite) {
     assertSnapshot(snapshots);
   });
 
+  it('can record style changes compactly and preserve css var() functions', async () => {
+    const page: puppeteer.Page = await browser.newPage();
+    await page.goto('about:blank');
+    await page.setContent(getHtml.call(this, 'blank.html'), {
+      waitUntil: 'networkidle0',
+    });
+
+    // goal here is to ensure var(--mystery) ends up in the mutations (CSSOM fails in this case)
+    await page.evaluate(
+      'document.body.setAttribute("style", "background: var(--mystery)")',
+    );
+    await waitForRAF(page);
+    // and in this change we can't use the shorter styleObj format either
+    await page.evaluate(
+      'document.body.setAttribute("style", "background: var(--mystery); background-color: black")',
+    );
+
+    // reset is always shorter to be recorded as a sting rather than a styleObj
+    await page.evaluate('document.body.setAttribute("style", "")');
+    await waitForRAF(page);
+
+    await page.evaluate('document.body.setAttribute("style", "display:block")');
+    await waitForRAF(page);
+    // following should be recorded as an update of `{ color: 'var(--mystery-color)' }` without needing to include the display
+    await page.evaluate(
+      'document.body.setAttribute("style", "color:var(--mystery-color);display:block")',
+    );
+    await waitForRAF(page);
+    // whereas this case, it's shorter to record the entire string than the longhands for margin
+    await page.evaluate(
+      'document.body.setAttribute("style", "color:var(--mystery-color);display:block;margin:10px")',
+    );
+    await waitForRAF(page);
+    // and in this case, it's shorter to record just the change to the longhand margin-left;
+    await page.evaluate(
+      'document.body.setAttribute("style", "color:var(--mystery-color);display:block;margin:10px 10px 10px 0px;")',
+    );
+    await waitForRAF(page);
+    // see what happens when we manipulate the style object directly (expecting a compact mutation with just these two changes)
+    await page.evaluate(
+      'document.body.style.marginTop = 0; document.body.style.color = null',
+    );
+    await waitForRAF(page);
+
+    const snapshots = (await page.evaluate(
+      'window.snapshots',
+    )) as eventWithTime[];
+    assertSnapshot(snapshots);
+  });
+
   it('can freeze mutations', async () => {
     const page: puppeteer.Page = await browser.newPage();
     await page.goto('about:blank');
@@ -252,14 +303,17 @@ describe('record integration tests', function (this: ISuite) {
   it('should not record input events on ignored elements', async () => {
     const page: puppeteer.Page = await browser.newPage();
     await page.goto('about:blank');
-    await page.setContent(getHtml.call(this, 'ignore.html'));
+    await page.setContent(
+      getHtml.call(this, 'ignore.html', {
+        ignoreSelector: '[data-rr-ignore]',
+      }),
+    );
 
     await page.type('.rr-ignore', 'secret');
+    await page.type('[data-rr-ignore]', 'secret');
+    await page.type('.dont-ignore', 'not secret');
 
-    const snapshots = (await page.evaluate(
-      'window.snapshots',
-    )) as eventWithTime[];
-    assertSnapshot(snapshots);
+    await assertSnapshot(page);
   });
 
   it('should not record input values if maskAllInputs is enabled', async () => {
@@ -496,6 +550,7 @@ describe('record integration tests', function (this: ISuite) {
         recordCanvas: true,
       }),
     );
+    await page.waitForFunction('window.canvasMutationApplied');
     await waitForRAF(page);
     const snapshots = (await page.evaluate(
       'window.snapshots',
@@ -530,10 +585,7 @@ describe('record integration tests', function (this: ISuite) {
 
     await page.type('#input', 'moo');
 
-    const snapshots = (await page.evaluate(
-      'window.snapshots',
-    )) as eventWithTime[];
-    assertSnapshot(snapshots);
+    await assertSnapshot(page);
   });
 
   it('should record webgl canvas mutations', async () => {
@@ -706,13 +758,9 @@ describe('record integration tests', function (this: ISuite) {
     await page.goto(`${serverURL}/html`);
     await page.setContent(getHtml.call(this, 'main.html'));
 
-    await page.waitForSelector('#two');
-    const frameIdTwo = await page.frames()[2];
-    await frameIdTwo.waitForSelector('#four');
-    const frameIdFour = frameIdTwo.childFrames()[1];
-    await frameIdFour.waitForSelector('#five');
-
-    await page.waitForTimeout(50);
+    const frameIdTwo = await waitForIFrameLoad(page, '#two');
+    const frameIdFour = await waitForIFrameLoad(frameIdTwo, '#four');
+    await waitForIFrameLoad(frameIdFour, '#five');
 
     const snapshots = (await page.evaluate(
       'window.snapshots',
@@ -1122,6 +1170,26 @@ describe('record integration tests', function (this: ISuite) {
       getHtml.call(this, 'mask-text.html', {
         maskTextSelector: '[data-masking="true"]',
         maskTextFn: (t: string) => t.replace(/[a-z]/g, '*'),
+      }),
+    );
+
+    const snapshots = (await page.evaluate(
+      'window.snapshots',
+    )) as eventWithTime[];
+    assertSnapshot(snapshots);
+  });
+
+  it('should unmask texts using maskTextFn', async () => {
+    const page: puppeteer.Page = await browser.newPage();
+    await page.goto('about:blank');
+    await page.setContent(
+      getHtml.call(this, 'mask-text.html', {
+        maskTextSelector: '*',
+        maskTextFn: (t: string, el: HTMLElement) => {
+          return el.matches('[data-unmask-example="true"]')
+            ? t
+            : t.replace(/[a-z]/g, '*');
+        },
       }),
     );
 

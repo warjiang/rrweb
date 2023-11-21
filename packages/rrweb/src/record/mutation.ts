@@ -18,7 +18,6 @@ import type {
   attributeCursor,
   removedNodeMutation,
   addedNodeMutation,
-  styleAttributeValue,
   Optional,
 } from '@rrweb/types';
 import {
@@ -31,6 +30,7 @@ import {
   isSerializedStylesheet,
   inDom,
   getShadowHost,
+  closestElementOfNode,
 } from '../utils';
 
 type DoubleLinkedListNode = {
@@ -142,6 +142,7 @@ export default class MutationBuffer {
 
   private texts: textCursor[] = [];
   private attributes: attributeCursor[] = [];
+  private attributeMap = new WeakMap<Node, attributeCursor>();
   private removes: removedNodeMutation[] = [];
   private mapRemoves: Node[] = [];
 
@@ -190,6 +191,7 @@ export default class MutationBuffer {
   private canvasManager: observerParam['canvasManager'];
   private processedNodeManager: observerParam['processedNodeManager'];
   private assetManager: observerParam['assetManager'];
+  private unattachedDoc: HTMLDocument;
 
   public init(options: MutationBufferParam) {
     (
@@ -268,6 +270,7 @@ export default class MutationBuffer {
     // so that the mirror for takeFullSnapshot doesn't get mutated while it's event is being processed
 
     const adds: addedNodeMutation[] = [];
+    const addedIds = new Set<number>();
 
     /**
      * Sometimes child node may be pushed before its newly added
@@ -343,6 +346,7 @@ export default class MutationBuffer {
           nextId,
           node: sn,
         });
+        addedIds.add(sn.id);
       }
     };
 
@@ -442,13 +446,36 @@ export default class MutationBuffer {
           id: this.mirror.getId(text.node),
           value: text.value,
         }))
+        // no need to include them on added elements, as they have just been serialized with up to date attribubtes
+        .filter((text) => !addedIds.has(text.id))
         // text mutation's id was not in the mirror map means the target node has been removed
         .filter((text) => this.mirror.has(text.id)),
       attributes: this.attributes
-        .map((attribute) => ({
-          id: this.mirror.getId(attribute.node),
-          attributes: attribute.attributes,
-        }))
+        .map((attribute) => {
+          const { attributes } = attribute;
+          if (typeof attributes.style === 'string') {
+            const diffAsStr = JSON.stringify(attribute.styleDiff);
+            const unchangedAsStr = JSON.stringify(attribute._unchangedStyles);
+            // check if the style diff is actually shorter than the regular string based mutation
+            // (which was the whole point of #464 'compact style mutation').
+            if (diffAsStr.length < attributes.style.length) {
+              // also: CSSOM fails badly when var() is present on shorthand properties, so only proceed with
+              // the compact style mutation if these have all been accounted for
+              if (
+                (diffAsStr + unchangedAsStr).split('var(').length ===
+                attributes.style.split('var(').length
+              ) {
+                attributes.style = attribute.styleDiff;
+              }
+            }
+          }
+          return {
+            id: this.mirror.getId(attribute.node),
+            attributes: attributes,
+          };
+        })
+        // no need to include them on added elements, as they have just been serialized with up to date attribubtes
+        .filter((attribute) => !addedIds.has(attribute.id))
         // attribute mutation's id was not in the mirror map means the target node has been removed
         .filter((attribute) => this.mirror.has(attribute.id)),
       removes: this.removes,
@@ -467,6 +494,7 @@ export default class MutationBuffer {
     // reset
     this.texts = [];
     this.attributes = [];
+    this.attributeMap = new WeakMap<Node, attributeCursor>();
     this.removes = [];
     this.addedSet = new Set<Node>();
     this.movedSet = new Set<Node>();
@@ -480,17 +508,10 @@ export default class MutationBuffer {
     if (isIgnored(m.target, this.mirror)) {
       return;
     }
-    let unattachedDoc;
-    try {
-      // avoid upsetting original document from a Content Security point of view
-      unattachedDoc = document.implementation.createHTMLDocument();
-    } catch (e) {
-      // fallback to more direct method
-      unattachedDoc = this.doc;
-    }
     switch (m.type) {
       case 'characterData': {
         const value = m.target.textContent;
+
         if (
           !isBlocked(m.target, this.blockClass, this.blockSelector, false) &&
           value !== m.oldValue
@@ -503,7 +524,7 @@ export default class MutationBuffer {
                 this.maskTextSelector,
               ) && value
                 ? this.maskTextFn
-                  ? this.maskTextFn(value)
+                  ? this.maskTextFn(value, closestElementOfNode(m.target))
                   : value.replace(/[\S]/g, '*')
                 : value,
             node: m.target,
@@ -535,9 +556,7 @@ export default class MutationBuffer {
           return;
         }
 
-        let item: attributeCursor | undefined = this.attributes.find(
-          (a) => a.node === m.target,
-        );
+        let item = this.attributeMap.get(m.target);
         if (
           target.tagName === 'IFRAME' &&
           attributeName === 'src' &&
@@ -561,8 +580,11 @@ export default class MutationBuffer {
           item = {
             node: m.target,
             attributes: {},
+            styleDiff: {},
+            _unchangedStyles: {},
           };
           this.attributes.push(item);
+          this.attributeMap.set(m.target, item);
         }
 
         // Keep this property on inputs that used to be password inputs
@@ -575,39 +597,7 @@ export default class MutationBuffer {
           target.setAttribute('data-rr-is-password', 'true');
         }
 
-        if (attributeName === 'style') {
-          const old = unattachedDoc.createElement('span');
-          if (m.oldValue) {
-            old.setAttribute('style', m.oldValue);
-          }
-          if (
-            item.attributes.style === undefined ||
-            item.attributes.style === null
-          ) {
-            item.attributes.style = {};
-          }
-          const styleObj = item.attributes.style as styleAttributeValue;
-          for (const pname of Array.from(target.style)) {
-            const newValue = target.style.getPropertyValue(pname);
-            const newPriority = target.style.getPropertyPriority(pname);
-            if (
-              newValue !== old.style.getPropertyValue(pname) ||
-              newPriority !== old.style.getPropertyPriority(pname)
-            ) {
-              if (newPriority === '') {
-                styleObj[pname] = newValue;
-              } else {
-                styleObj[pname] = [newValue, newPriority];
-              }
-            }
-          }
-          for (const pname of Array.from(old.style)) {
-            if (target.style.getPropertyValue(pname) === '') {
-              // "if not set, returns the empty string"
-              styleObj[pname] = false; // delete
-            }
-          }
-        } else if (!ignoreAttribute(target.tagName, attributeName, value)) {
+        if (!ignoreAttribute(target.tagName, attributeName, value)) {
           // overwrite attribute if the mutations was triggered in same time
           item.attributes[attributeName] = transformAttribute(
             this.doc,
@@ -615,6 +605,45 @@ export default class MutationBuffer {
             toLowerCase(attributeName),
             value,
           );
+          if (attributeName === 'style') {
+            if (!this.unattachedDoc) {
+              try {
+                // avoid upsetting original document from a Content Security point of view
+                this.unattachedDoc =
+                  document.implementation.createHTMLDocument();
+              } catch (e) {
+                // fallback to more direct method
+                this.unattachedDoc = this.doc;
+              }
+            }
+            const old = this.unattachedDoc.createElement('span');
+            if (m.oldValue) {
+              old.setAttribute('style', m.oldValue);
+            }
+            for (const pname of Array.from(target.style)) {
+              const newValue = target.style.getPropertyValue(pname);
+              const newPriority = target.style.getPropertyPriority(pname);
+              if (
+                newValue !== old.style.getPropertyValue(pname) ||
+                newPriority !== old.style.getPropertyPriority(pname)
+              ) {
+                if (newPriority === '') {
+                  item.styleDiff[pname] = newValue;
+                } else {
+                  item.styleDiff[pname] = [newValue, newPriority];
+                }
+              } else {
+                // for checking
+                item._unchangedStyles[pname] = [newValue, newPriority];
+              }
+            }
+            for (const pname of Array.from(old.style)) {
+              if (target.style.getPropertyValue(pname) === '') {
+                // "if not set, returns the empty string"
+                item.styleDiff[pname] = false; // delete
+              }
+            }
+          }
         }
         break;
       }

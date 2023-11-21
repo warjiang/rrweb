@@ -46,6 +46,7 @@ import {
   IWindow,
   SelectionRange,
   selectionCallback,
+  customElementCallback,
 } from '@rrweb/types';
 import MutationBuffer from './mutation';
 import { callbackWrapper } from './error-handler';
@@ -76,10 +77,11 @@ function getEventTarget(event: Event | NonStandardEvent): EventTarget | null {
     } else if ('path' in event && event.path.length) {
       return event.path[0];
     }
-    return event.target;
   } catch {
-    return event.target;
+    // fallback to `event.target` below
   }
+
+  return event && event.target;
 }
 
 export function initMutationObserver(
@@ -378,9 +380,10 @@ export function initScrollObserver({
   return on('scroll', updatePosition, doc);
 }
 
-function initViewportResizeObserver({
-  viewportResizeCb,
-}: observerParam): listenerHandler {
+function initViewportResizeObserver(
+  { viewportResizeCb }: observerParam,
+  { win }: { win: IWindow },
+): listenerHandler {
   let lastH = -1;
   let lastW = -1;
   const updateDimension = callbackWrapper(
@@ -400,16 +403,7 @@ function initViewportResizeObserver({
       200,
     ),
   );
-  return on('resize', updateDimension, window);
-}
-
-function wrapEventWithUserTriggeredFlag(
-  v: inputValue,
-  enable: boolean,
-): inputValue {
-  const value = { ...v };
-  if (!enable) delete value.userTriggered;
-  return value;
+  return on('resize', updateDimension, win);
 }
 
 export const INPUT_TAGS = ['INPUT', 'TEXTAREA', 'SELECT'];
@@ -421,6 +415,7 @@ function initInputObserver({
   blockClass,
   blockSelector,
   ignoreClass,
+  ignoreSelector,
   maskInputOptions,
   maskInputFn,
   sampling,
@@ -447,7 +442,10 @@ function initInputObserver({
       return;
     }
 
-    if (target.classList.contains(ignoreClass)) {
+    if (
+      target.classList.contains(ignoreClass) ||
+      (ignoreSelector && target.matches(ignoreSelector))
+    ) {
       return;
     }
     let text = (target as HTMLInputElement).value;
@@ -471,10 +469,9 @@ function initInputObserver({
     }
     cbWithDedup(
       target,
-      callbackWrapper(wrapEventWithUserTriggeredFlag)(
-        { text, isChecked, userTriggered },
-        userTriggeredOnInput,
-      ),
+      userTriggeredOnInput
+        ? { text, isChecked, userTriggered }
+        : { text, isChecked },
     );
     // if a radio was checked
     // the other radios with the same name attribute will be unchecked.
@@ -484,16 +481,12 @@ function initInputObserver({
         .querySelectorAll(`input[type="radio"][name="${name}"]`)
         .forEach((el) => {
           if (el !== target) {
+            const text = (el as HTMLInputElement).value;
             cbWithDedup(
               el,
-              callbackWrapper(wrapEventWithUserTriggeredFlag)(
-                {
-                  text: (el as HTMLInputElement).value,
-                  isChecked: !isChecked,
-                  userTriggered: false,
-                },
-                userTriggeredOnInput,
-              ),
+              userTriggeredOnInput
+                ? { text, isChecked: !isChecked, userTriggered: false }
+                : { text, isChecked: !isChecked },
             );
           }
         });
@@ -894,10 +887,12 @@ export function initAdoptedStyleSheetObserver(
     host.nodeName === '#document'
       ? (host as Document).defaultView?.Document
       : host.ownerDocument?.defaultView?.ShadowRoot;
-  const originalPropertyDescriptor = Object.getOwnPropertyDescriptor(
-    patchTarget?.prototype,
-    'adoptedStyleSheets',
-  );
+  const originalPropertyDescriptor = patchTarget?.prototype
+    ? Object.getOwnPropertyDescriptor(
+        patchTarget?.prototype,
+        'adoptedStyleSheets',
+      )
+    : undefined;
   if (
     hostId === null ||
     hostId === -1 ||
@@ -1035,6 +1030,7 @@ function initMediaInteractionObserver({
   blockSelector,
   mirror,
   sampling,
+  doc,
 }: observerParam): listenerHandler {
   const handler = callbackWrapper((type: MediaInteractions) =>
     throttle(
@@ -1061,11 +1057,11 @@ function initMediaInteractionObserver({
     ),
   );
   const handlers = [
-    on('play', handler(MediaInteractions.Play)),
-    on('pause', handler(MediaInteractions.Pause)),
-    on('seeked', handler(MediaInteractions.Seeked)),
-    on('volumechange', handler(MediaInteractions.VolumeChange)),
-    on('ratechange', handler(MediaInteractions.RateChange)),
+    on('play', handler(MediaInteractions.Play), doc),
+    on('pause', handler(MediaInteractions.Pause), doc),
+    on('seeked', handler(MediaInteractions.Seeked), doc),
+    on('volumechange', handler(MediaInteractions.VolumeChange), doc),
+    on('ratechange', handler(MediaInteractions.RateChange), doc),
   ];
   return callbackWrapper(() => {
     handlers.forEach((h) => h());
@@ -1174,6 +1170,44 @@ function initSelectionObserver(param: observerParam): listenerHandler {
   return on('selectionchange', updateSelection);
 }
 
+function initCustomElementObserver({
+  doc,
+  customElementCb,
+}: observerParam): listenerHandler {
+  const win = doc.defaultView as IWindow;
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  if (!win || !win.customElements) return () => {};
+  const restoreHandler = patch(
+    win.customElements,
+    'define',
+    function (
+      original: (
+        name: string,
+        constructor: CustomElementConstructor,
+        options?: ElementDefinitionOptions,
+      ) => void,
+    ) {
+      return function (
+        name: string,
+        constructor: CustomElementConstructor,
+        options?: ElementDefinitionOptions,
+      ) {
+        try {
+          customElementCb({
+            define: {
+              name,
+            },
+          });
+        } catch (e) {
+          console.warn(`Custom element callback failed for ${name}`);
+        }
+        return original.apply(this, [name, constructor, options]);
+      };
+    },
+  );
+  return restoreHandler;
+}
+
 function mergeHooks(o: observerParam, hooks: hooksParam) {
   const {
     mutationCb,
@@ -1188,6 +1222,7 @@ function mergeHooks(o: observerParam, hooks: hooksParam) {
     canvasMutationCb,
     fontCb,
     selectionCb,
+    customElementCb,
   } = o;
   o.mutationCb = (...p: Arguments<mutationCallBack>) => {
     if (hooks.mutation) {
@@ -1261,6 +1296,12 @@ function mergeHooks(o: observerParam, hooks: hooksParam) {
     }
     selectionCb(...p);
   };
+  o.customElementCb = (...c: Arguments<customElementCallback>) => {
+    if (hooks.customElement) {
+      hooks.customElement(...c);
+    }
+    customElementCb(...c);
+  };
 }
 
 export function initObservers(
@@ -1275,25 +1316,39 @@ export function initObservers(
   }
 
   mergeHooks(o, hooks);
-  const mutationObserver = initMutationObserver(o, o.doc);
+  let mutationObserver: MutationObserver | undefined;
+  if (o.recordDOM) {
+    mutationObserver = initMutationObserver(o, o.doc);
+  }
   const mousemoveHandler = initMoveObserver(o);
   const mouseInteractionHandler = initMouseInteractionObserver(o);
   const scrollHandler = initScrollObserver(o);
-  const viewportResizeHandler = initViewportResizeObserver(o);
+  const viewportResizeHandler = initViewportResizeObserver(o, {
+    win: currentWindow,
+  });
   const inputHandler = initInputObserver(o);
   const mediaInteractionHandler = initMediaInteractionObserver(o);
 
-  const styleSheetObserver = initStyleSheetObserver(o, { win: currentWindow });
-  const adoptedStyleSheetObserver = initAdoptedStyleSheetObserver(o, o.doc);
-  const styleDeclarationObserver = initStyleDeclarationObserver(o, {
-    win: currentWindow,
-  });
-  const fontObserver = o.collectFonts
-    ? initFontObserver(o)
-    : () => {
-        //
-      };
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  let styleSheetObserver = () => {};
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  let adoptedStyleSheetObserver = () => {};
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  let styleDeclarationObserver = () => {};
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  let fontObserver = () => {};
+  if (o.recordDOM) {
+    styleSheetObserver = initStyleSheetObserver(o, { win: currentWindow });
+    adoptedStyleSheetObserver = initAdoptedStyleSheetObserver(o, o.doc);
+    styleDeclarationObserver = initStyleDeclarationObserver(o, {
+      win: currentWindow,
+    });
+    if (o.collectFonts) {
+      fontObserver = initFontObserver(o);
+    }
+  }
   const selectionObserver = initSelectionObserver(o);
+  const customElementObserver = initCustomElementObserver(o);
 
   // plugins
   const pluginHandlers: listenerHandler[] = [];
@@ -1305,7 +1360,7 @@ export function initObservers(
 
   return callbackWrapper(() => {
     mutationBuffers.forEach((b) => b.reset());
-    mutationObserver.disconnect();
+    mutationObserver?.disconnect();
     mousemoveHandler();
     mouseInteractionHandler();
     scrollHandler();
@@ -1317,6 +1372,7 @@ export function initObservers(
     styleDeclarationObserver();
     fontObserver();
     selectionObserver();
+    customElementObserver();
     pluginHandlers.forEach((h) => h());
   });
 }
