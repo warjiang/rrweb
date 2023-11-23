@@ -1183,7 +1183,10 @@ export function serializeNodeWithId(
           });
 
           if (serializedIframeNode) {
-            onIframeLoad(n as HTMLIFrameElement, serializedIframeNode);
+            onIframeLoad(
+              n as HTMLIFrameElement,
+              serializedIframeNode as serializedElementNodeWithId,
+            );
           }
         }
       },
@@ -1227,7 +1230,10 @@ export function serializeNodeWithId(
           });
 
           if (serializedLinkNode) {
-            onStylesheetLoad(n as HTMLLinkElement, serializedLinkNode);
+            onStylesheetLoad(
+              n as HTMLLinkElement,
+              serializedLinkNode as serializedElementNodeWithId,
+            );
           }
         }
       },
