@@ -921,6 +921,7 @@ export class Replayer {
       skipChild: false,
       afterAppend,
       cache: this.cache,
+      assetManager: this.assetManager,
     });
     afterAppend(iframeEl.contentDocument! as Document, mutation.node.id);
 
@@ -1552,6 +1553,7 @@ export class Replayer {
         skipChild: true,
         hackCss: true,
         cache: this.cache,
+        assetManager: this.assetManager,
         /**
          * caveat: `afterAppend` only gets called on child nodes of target
          * we have to call it again below when this target was added to the DOM
@@ -1764,6 +1766,7 @@ export class Replayer {
                     skipChild: true,
                     hackCss: true,
                     cache: this.cache,
+                    assetManager: this.assetManager,
                   });
                   const siblingNode = target.nextSibling;
                   const parentNode = target.parentNode;
@@ -1780,10 +1783,15 @@ export class Replayer {
                   // for safe
                 }
               }
-              (target as Element | RRElement).setAttribute(
+              const targetEl = target as Element | RRElement;
                 attributeName,
                 value,
               );
+              if (
+                this.assetManager.isAttributeCacheable(targetEl, attributeName)
+              ) {
+                void this.assetManager.manageAttribute(targetEl, attributeName);
+              }
             } catch (error) {
               this.warn(
                 'An error occurred may due to the checkout feature.',
