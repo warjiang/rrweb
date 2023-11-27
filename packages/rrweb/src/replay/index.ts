@@ -1784,9 +1784,7 @@ export class Replayer {
                 }
               }
               const targetEl = target as Element | RRElement;
-                attributeName,
-                value,
-              );
+              targetEl.setAttribute(attributeName, value);
               if (
                 this.assetManager.isAttributeCacheable(targetEl, attributeName)
               ) {
@@ -2184,9 +2182,6 @@ export class Replayer {
 
   private backToNormal() {
     this.nextUserInteractionEvent = null;
-    if (this.speedService.state.matches('normal')) {
-      return;
-    }
     this.speedService.send({ type: 'BACK_TO_NORMAL' });
     this.emitter.emit(ReplayerEvents.SkipEnd, {
       speed: this.speedService.state.context.normalSpeed,
