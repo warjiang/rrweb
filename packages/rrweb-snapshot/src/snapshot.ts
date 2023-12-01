@@ -25,6 +25,7 @@ import {
   getInputType,
   toLowerCase,
   getUrlsFromSrcset,
+  isAttributeCacheable,
 } from './utils';
 
 let _id = 1;
@@ -674,12 +675,21 @@ function serializeElementNode(
   for (let i = 0; i < len; i++) {
     const attr = n.attributes[i];
     if (!ignoreAttribute(tagName, attr.name, attr.value)) {
-      attributes[attr.name] = transformAttribute(
+      const value = (attributes[attr.name] = transformAttribute(
         doc,
         tagName,
         toLowerCase(attr.name),
         attr.value,
-      );
+      ));
+
+      // save assets offline
+      if (value && onAssetDetected && isAttributeCacheable(n, attr.name)) {
+        if (attr.name === 'srcset') {
+          assets.push(...getUrlsFromSrcset(value));
+        } else {
+          assets.push(value);
+        }
+      }
     }
   }
   // remote css
@@ -774,15 +784,6 @@ function serializeElementNode(
       if (canvasDataURL !== blankCanvasDataURL) {
         attributes.rr_dataURL = canvasDataURL;
       }
-    }
-  }
-  // save image offline
-  if (tagName === 'img' && onAssetDetected) {
-    if (attributes.src) {
-      assets.push(attributes.src.toString());
-    }
-    if (attributes.srcset) {
-      assets.push(...getUrlsFromSrcset(attributes.srcset.toString()));
     }
   }
 
