@@ -13,6 +13,7 @@ export async function compileTSCode(inputFilePath: string) {
       resolve() as unknown as rollup.Plugin,
       _typescript({
         tsconfigOverride: { compilerOptions: { module: 'ESNext' } },
+        cacheRoot: `./node_modules/.cache/rrdom-test/${Date.now()}/`,
       }) as unknown as rollup.Plugin,
     ],
   });
